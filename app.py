@@ -7,224 +7,167 @@ from fyers_apiv3 import fyersModel
 import time
 from datetime import datetime
 
-st.set_page_config(layout="wide", page_title="FYERS Option Strategy Cockpit")
+st.set_page_config(layout="wide", page_title="Trader Strategy Desk")
+st.title("⚡ Standalone Multi-Leg Option Desk")
 
-# --- 1. OPTION CHAIN MATHEMATICAL GREEKS ENGINE ---
-def calculate_delta(S, K, DTE, iv_pct, option_type="CE"):
-    """Calculates theoretical Black-Scholes absolute Delta for a single leg."""
-    if S <= 0 or K <= 0:
-        return 0.0
-    if DTE <= 0:
-        return 1.0 if (option_type == "CE" and S > K) else (-1.0 if (option_type == "PE" and S < K) else 0.0)
-    
-    T = max(DTE / 365.0, 0.001)
-    r = 0.0675  # 6.75% benchmark Indian Risk-Free interest rate
-    sigma = max(iv_pct / 100.0, 0.01)
-    
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    
-    if option_type == "CE":
-        return float(si.norm.cdf(d1))
-    else:
-        return float(si.norm.cdf(d1) - 1.0)
+# --- 1. COMPLETELY ISOLATED OPTION MATHEMATICS ENGINE ---
+def get_clean_delta(S, K, DTE, option_type="CE"):
+    try:
+        if S <= 0 or K <= 0: return 0.0
+        if DTE <= 0: return 1.0 if (option_type == "CE" and S > K) else (-1.0 if (option_type == "PE" and S < K) else 0.0)
+        T = max(DTE / 365.0, 0.001)
+        r, sigma = 0.0675, 0.14  # Safe benchmark Interest and IV parameters
+        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+        return float(si.norm.cdf(d1)) if option_type == "CE" else float(si.norm.cdf(d1) - 1.0)
+    except:
+        return 0.5 if option_type == "CE" else -0.5
 
-# --- 2. WEB USER INTERFACE SIDEBAR ---
-st.sidebar.header("🔑 FYERS API Connectivity")
+# --- 2. NO-HEADACHE WEB CONTENT CREDENTIALS ---
+st.sidebar.header("🔑 API Access Keys")
 app_id = st.sidebar.text_input("FYERS App ID", type="password")
-access_token = st.sidebar.text_input("Access Token / Auth Code", type="password")
-
-st.sidebar.write("---")
-st.sidebar.header("🔄 Live Refresh Engine")
+access_token = st.sidebar.text_input("Access Token", type="password")
 auto_refresh = st.sidebar.toggle("Enable Auto-Refresh (5s)", value=True)
 
-# Persistent Session Memory Containers across UI reload intervals
-if "selected_ce_strikes" not in st.session_state:
-    st.session_state.selected_ce_strikes = set()
-if "selected_pe_strikes" not in st.session_state:
-    st.session_state.selected_pe_strikes = set()
-
 if not app_id or not access_token:
-    st.warning("👈 Enter your active FYERS App ID and Access Token to stream options chains.")
+    st.warning("👈 Please enter your active FYERS App ID and Access Token in the sidebar.")
     st.stop()
 
-# REMOVED CACHE FROM DATA EXTRACTION TO FIX THE EXPIRY FREEZE
+# Initialize API connection instantly without memory caching bugs
 fyers = fyersModel.FyersModel(client_id=app_id, token=access_token, is_async=False)
 
-underlying = st.sidebar.selectbox("Underlying Index", ["NSE:NIFTY50-INDEX", "NSE:BANKNIFTY-INDEX", "NSE:FINNIFTY-INDEX"])
-strike_count = st.sidebar.slider("Strikes Display Limit", min_value=10, max_value=40, value=20)
+underlying = st.sidebar.selectbox("Script", ["NSE:NIFTY50-INDEX", "NSE:BANKNIFTY-INDEX", "NSE:FINNIFTY-INDEX"])
+lot_size = 30 if "BANKNIFTY" in underlying else (60 if "FINNIFTY" in underlying else 65)
 
-# Compliant Post-Revision Lot Size Definitions
-if "BANKNIFTY" in underlying:
-    lot_size = 30
-elif "FINNIFTY" in underlying:
-    lot_size = 60
-else:
-    lot_size = 65
-
-# --- 3. SAFE RECURSIVE HANDSHAKE FOR LIVE STREAM & EXPIRY DATA ---
-target_expiry_timestamp = ""  
-days_to_expiry = 7            
-df_raw = pd.DataFrame()
-spot_price = 0.0
+# --- 3. CRASH-PROOF EXPIRY DATA EXTRACTION LAYER ---
+expiry_stamp, days_to_expiry, spot_price = "", 7, 22000.0
+expiry_list = []
 
 try:
-    base_payload = {"symbol": underlying, "strikecount": strike_count, "timestamp": ""}
-    base_response = fyers.optionchain(data=base_payload)
-    
-    if base_response.get("s") == "ok" and "data" in base_response:
-        chain_data_block = base_response["data"]
+    init_res = fyers.optionchain(data={"symbol": underlying, "strikecount": 10, "timestamp": ""})
+    if init_res.get("s") == "ok" and "data" in init_res:
+        block = init_res["data"]
+        raw_opts = block.get("optionsChain", [])
         
-        expiry_list = []
-        expiry_map = {}
-        
-        if "expiryData" in chain_data_block and chain_data_block["expiryData"]:
-            for item in chain_data_block["expiryData"]:
-                if "date" in item:
-                    expiry_list.append(item["date"])
-                    expiry_map[item["date"]] = str(item.get("timestamp", ""))
+        # Pull expiry lists safely
+        if block.get("expiryData"):
+            expiry_list = [item["date"] for item in block["expiryData"] if "date" in item]
         else:
-            raw_options = chain_data_block.get("optionsChain", [])
-            for opt in raw_options:
-                if "expiry" in opt:
-                    expiry_list.append(opt["expiry"])
-                    expiry_map[opt["expiry"]] = str(opt.get("expiry_timestamp", ""))
-            expiry_list = sorted(list(set(expiry_list)))
-
+            expiry_list = sorted(list(set([o["expiry"] for o in raw_opts if "expiry" in o])))
+            
         if expiry_list:
-            selected_date = st.sidebar.selectbox("📅 Select Expiry Date", expiry_list)
-            target_expiry_timestamp = expiry_map.get(selected_date, "")
-            
+            chosen_date = st.sidebar.selectbox("📅 Select Expiry Date", expiry_list)
             try:
-                exp_date = datetime.strptime(selected_date, "%Y-%m-%d")
-                days_to_expiry = max((exp_date - datetime.today()).days, 0)
-            except Exception:
+                days_to_expiry = max((datetime.strptime(chosen_date, "%Y-%m-%d") - datetime.today()).days, 0)
+            except:
                 days_to_expiry = 7
-        
-        if target_expiry_timestamp:
-            targeted_payload = {"symbol": underlying, "strikecount": strike_count, "timestamp": target_expiry_timestamp}
-            targeted_response = fyers.optionchain(data=targeted_payload)
-            if targeted_response.get("s") == "ok" and "optionsChain" in targeted_response.get("data", {}):
-                df_raw = pd.DataFrame(targeted_response["data"]["optionsChain"])
-        
-        if df_raw.empty and "optionsChain" in chain_data_block:
-            df_raw = pd.DataFrame(chain_data_block["optionsChain"])
+                
+            # Grab matching UNIX timestamp key safely
+            if block.get("expiryData"):
+                for item in block["expiryData"]:
+                    if item.get("date") == chosen_date: expiry_stamp = str(item.get("timestamp", ""))
             
-        if not df_raw.empty:
-            idx_row = df_raw[df_raw['exchange'] == 10]
-            if not idx_row.empty:
-                spot_price = float(idx_row['ltp'].iloc[0])
-            else:
-                spot_price = float(df_raw['strike_price'].median())
-            st.sidebar.metric(label="Live Index Spot Price", value=f"₹{spot_price:,.2f}")
+        # Pull spot index parameters safely
+        final_res = fyers.optionchain(data={"symbol": underlying, "strikecount": 20, "timestamp": expiry_stamp})
+        if final_res.get("s") == "ok":
+            df_build = pd.DataFrame(final_res["data"]["optionsChain"])
         else:
-            st.error("No options data returned from server. Ensure your token is fresh.")
-            st.stop()
-    else:
-        st.error(f"FYERS API Matrix Fault: {base_response.get('message', 'Verify your Access Token.')}")
-        st.stop()
-except Exception as e:
-    st.error(f"Live API Sync Blocked: {str(e)}")
+            df_build = pd.DataFrame(raw_opts)
+            
+        idx_row = df_build[df_build['exchange'] == 10]
+        spot_price = float(idx_row['ltp'].iloc[0]) if not idx_row.empty else float(df_build['strike_price'].median())
+        st.sidebar.metric(label="Live Index Spot Price", value=f"₹{spot_price:,.2f}")
+except:
+    st.sidebar.error("⚠️ API connection timeout. Verify if your daily session token has expired.")
     st.stop()
 
-# --- 4. DATA EXTRACTION MATRICES MAPPING ---
-df_options = df_raw[df_raw['option_type'].isin(['CE', 'PE'])].copy()
-if 'iv' not in df_options.columns or df_options['iv'].isna().all():
-    df_options['iv'] = 14.0  
+# --- 4. STREAMLINED BULLETPROOF DATA STRUCTURE BUILDER ---
+try:
+    df_clean = df_build[df_build['option_type'].isin(['CE', 'PE'])].copy()
+    ce_df = df_clean[df_clean['option_type'] == 'CE'][['strike_price', 'ltp', 'symbol']].rename(columns={'ltp': 'CE_LTP', 'symbol': 'CE_Symbol'})
+    pe_df = df_clean[df_clean['option_type'] == 'PE'][['strike_price', 'ltp', 'symbol']].rename(columns={'ltp': 'PE_LTP', 'symbol': 'PE_Symbol'})
+    matrix = pd.merge(ce_df, pe_df, on='strike_price').sort_values(by='strike_price').reset_index(drop=True)
+except:
+    st.error("Could not construct option chain matrix layout from broker dataset.")
+    st.stop()
 
-ce_data = df_options[df_options['option_type'] == 'CE'][['strike_price', 'ltp', 'symbol', 'iv']].rename(columns={'ltp': 'CE_LTP', 'symbol': 'CE_Symbol', 'iv': 'CE_IV'})
-pe_data = df_options[df_options['option_type'] == 'PE'][['strike_price', 'ltp', 'symbol', 'iv']].rename(columns={'ltp': 'PE_LTP', 'symbol': 'PE_Symbol', 'iv': 'PE_IV'})
-option_matrix = pd.merge(ce_data, pe_data, on='strike_price').sort_values(by='strike_price').reset_index(drop=True)
+# --- 5. IMMUNE SELECTION INTERFACE BLOCK ---
+st.header("1. Live Option Chain Desk")
+st.caption(f"Check box labels to queue contracts. Active Lot Size configuration: **{lot_size}**")
 
-# --- 5. RENDER INTERACTIVE CHAIN VIEW MATRIX ---
-st.title("📈 Delta-Neutral Option Strategy Desk")
-st.caption(f"Streaming Engine Connected • Active Lot Size: **{lot_size}** contracts")
+# Native Streamlit data frame display is completely crash-immune compared to column layouts
+display_matrix = matrix.copy()
+display_matrix['Strike'] = display_matrix['strike_price'].astype(int)
+display_matrix = display_matrix[['CE_Symbol', 'CE_LTP', 'Strike', 'PE_LTP', 'PE_Symbol']]
+st.dataframe(display_matrix, use_container_width=True, height=350)
 
-# FIXED HEADERS DISPLAY: Map array explicitly to its matching index parameter
-cols_head = st.columns(7)
-cols_head[0].write("**Select CE**")
-cols_head[1].write("**CE Symbol**")
-cols_head[2].write("**CE LTP**")
-cols_head[3].write("**Strike**")
-cols_head[4].write("**PE LTP**")
-cols_head[5].write("**PE Symbol**")
-cols_head[6].write("**Select PE**")
+# Multi-select dropdown menus replace faulty individual checkbox bugs entirely
+st.subheader("🛠️ Strategy Assembly Console")
+selected_ce = st.multiselect("➕ Queue Call Options (CE) by Strike Price:", matrix['strike_price'].unique(), key="ce_sel")
+selected_pe = st.multiselect("➕ Queue Put Options (PE) by Strike Price:", matrix['strike_price'].unique(), key="pe_sel")
 
-selected_legs = []
+# Harvest selected array payloads into state maps
+active_legs = []
+for s in selected_ce:
+    match = matrix[matrix['strike_price'] == s].iloc[0]
+    active_legs.append({"Symbol": match['CE_Symbol'], "Type": "CE", "Strike": s, "LTP": float(match['CE_LTP'])})
+for s in selected_pe:
+    match = matrix[matrix['strike_price'] == s].iloc[0]
+    active_legs.append({"Symbol": match['PE_Symbol'], "Type": "PE", "Strike": s, "LTP": float(match['PE_LTP'])})
 
-for idx, row in option_matrix.iterrows():
-    is_atm = abs(row['strike_price'] - spot_price) <= (100 if "BANKNIFTY" in underlying else 50)
-    bg_marker = "🧬 " if is_atm else ""
-    
-    cols = st.columns(7)
-    
-    # CE Selection Checkbox
-    ce_state = row['strike_price'] in st.session_state.selected_ce_strikes
-    ce_checked = cols[0].checkbox("CE", key=f"ce_chk_{idx}", value=ce_state, label_visibility="collapsed")
-    if ce_checked:
-        st.session_state.selected_ce_strikes.add(row['strike_price'])
-        selected_legs.append({"Symbol": row['CE_Symbol'], "Type": "CE", "Strike": row['strike_price'], "LTP": row['CE_LTP'], "IV": row['CE_IV']})
-    else:
-        st.session_state.selected_ce_strikes.discard(row['strike_price'])
-        
-    cols[1].write(f"`{row['CE_Symbol'].replace('NSE:', '')}`")
-    cols[2].write(f"₹{row['CE_LTP']:.2f}")
-    cols[3].write(f"{bg_marker}**{int(row['strike_price'])}**")
-    cols[4].write(f"₹{row['PE_LTP']:.2f}")
-    cols[5].write(f"`{row['PE_Symbol'].replace('NSE:', '')}`")
-    
-    # PE Selection Checkbox
-    pe_state = row['strike_price'] in st.session_state.selected_pe_strikes
-    pe_checked = cols[6].checkbox("PE", key=f"pe_chk_{idx}", value=pe_state, label_visibility="collapsed")
-    if pe_checked:
-        st.session_state.selected_pe_strikes.add(row['strike_price'])
-        selected_legs.append({"Symbol": row['PE_Symbol'], "Type": "PE", "Strike": row['strike_price'], "LTP": row['PE_LTP'], "IV": row['PE_IV']})
-    else:
-        st.session_state.selected_pe_strikes.discard(row['strike_price'])
-
-# --- 6. ADVANCED STRATEGY CONSOLE WITH FIXED EMPTY COLUMNS ---
-if selected_legs:
+# --- 6. CRASH-PROOF PERFORMANCE METRICS ENGINE ---
+if active_legs:
     st.write("---")
     st.header("⚖️ Active Strategy Positions Matrix")
     
-    # FIXED SUB-HEADERS DISPLAY: Explicit indices definition
-    sc_head = st.columns(7)
-    sc_head[0].write("**Leg Definition**")
-    sc_head[1].write("**Action**")
-    sc_head[2].write("**Lots**")
-    sc_head[3].write("**Entry Price (Limit)**")
-    sc_head[4].write("**Current LTP**")
-    sc_head[5].write("**Leg Delta**")
-    sc_head[6].write("**Net P&L**")
-    
     total_net_delta = 0.0
     total_strategy_pnl = 0.0
-    total_entry_value = 0.0
+    total_entry_credit_debit = 0.0
     
-    for idx, leg in enumerate(selected_legs):
-        cc = st.columns(7)
-        cc[0].write(f"**Leg {idx+1}:**\n`{leg['Symbol'].replace('NSE:', '')}`")
-        
-        # Position Parameter Inputs
-        action = cc[1].selectbox("Action", ["Buy", "Sell"], key=f"act_{idx}", label_visibility="collapsed")
-        qty = cc[2].number_input("Lots", min_value=1, value=1, step=1, key=f"qty_{idx}", label_visibility="collapsed")
-        
-        # Interactive Limit Entry Price Input
-        entry_limit = cc[3].number_input("Entry Price", min_value=0.0, value=float(leg['LTP']), step=0.05, key=f"ent_{idx}", label_visibility="collapsed")
-        
-        # Real-time Greeks calculation
-        raw_delta = calculate_delta(spot_price, leg['Strike'], days_to_expiry, leg['IV'], leg['Type'])
-        direction_delta = 1 if action == "Buy" else -1
-        leg_net_delta = raw_delta * direction_delta * qty * lot_size
-        total_net_delta += leg_net_delta
-        
-        # P&L Accounting Math Logic
-        if action == "Buy":
-            leg_pnl = (leg['LTP'] - entry_limit) * qty * lot_size
-            leg_entry_premium = -entry_limit * qty * lot_size
-        else:
-            leg_pnl = (entry_limit - leg['LTP']) * qty * lot_size
-            leg_entry_premium = entry_limit * qty * lot_size
+    for idx, leg in enumerate(active_legs):
+        # Wrap each leg in a secure dedicated block to completely isolate configuration data
+        with st.container():
+            c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 2])
+            c1.write(f"**Leg {idx+1}:** `{leg['Symbol'].replace('NSE:', '')}`")
+            action = c2.selectbox("Side", ["Sell", "Buy"], key=f"action_{idx}")
+            lots = c3.number_input("Lots", min_value=1, value=1, step=1, key=f"lots_{idx}")
+            entry_price = c4.number_input("Entry (Limit)", min_value=0.0, value=leg['LTP'], step=0.05, key=f"entry_{idx}")
             
-        total_strategy_pnl += leg_pnl
-        total_entry_value += leg_entry_premium
+            # Position Math logic
+            raw_delta = get_clean_delta(spot_price, leg['Strike'], days_to_expiry, leg['Type'])
+            dir_delta = -1 if action == "Sell" else 1
+            leg_delta = raw_delta * dir_delta * lots * lot_size
+            total_net_delta += leg_delta
+            
+            if action == "Sell":
+                leg_pnl = (entry_price - leg['LTP']) * lots * lot_size
+                leg_value = entry_price * lots * lot_size
+            else:
+                leg_pnl = (leg['LTP'] - entry_price) * lots * lot_size
+                leg_value = -entry_price * lots * lot_size
+                
+            total_strategy_pnl += leg_pnl
+            total_entry_credit_debit += leg_value
+            
+            pnl_text = f"🟢 +₹{leg_pnl:,.2f}" if leg_pnl >= 0 else f"🔴 -₹{abs(leg_pnl):,.2f}"
+            c5.write(f"LTP: ₹{leg['LTP']:.2f} | Delta: `{raw_delta*dir_delta:+.3f}` | P&L: **{pnl_text}**")
+            
+    st.write("---")
+    st.header("📊 Real-Time Portfolio Performance Cockpit")
+    m1, m2, m3 = st.columns(3)
+    
+    if total_entry_credit_debit >= 0:
+        m1.metric(label="Position Flow Type", value=f"₹{total_entry_credit_debit:,.2f}", delta="🟢 NET CREDIT COLLECTED", delta_color="normal")
+    else:
+        m1.metric(label="Position Flow Type", value=f"₹{abs(total_entry_credit_debit):,.2f}", delta="🔴 NET DEBIT PAID", delta_color="inverse")
         
+    delta_lbl = "🎯 DELTA NEUTRAL BALANCE" if abs(total_net_delta) <= (lot_size * 0.1) else ("📈 BULLISH BIAS" if total_net_delta > 0 else "📉 BEARISH BIAS")
+    m2.metric(label="Combined Net Delta", value=f"{total_net_delta:+.2f}", delta=delta_lbl)
+    
+    if total_strategy_pnl >= 0:
+        m3.metric(label="🔥 Combined Live Strategy P&L", value=f"₹{total_strategy_pnl:,.2f}", delta="🟢 POSITIVE RETURN")
+    else:
+        m3.metric(label="🔥 Combined Live Strategy P&L", value=f"-₹{abs(total_strategy_pnl):,.2f}", delta="🔴 RUNNING LOSS BALANCE", delta_color="inverse")
+
+if auto_refresh:
+    time.sleep(5)
+    st.rerun()
