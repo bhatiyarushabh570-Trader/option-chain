@@ -5,7 +5,7 @@ import numpy as np
 import scipy.stats as si
 from fyers_apiv3 import fyersModel
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="FYERS Option Strategy Cockpit")
 
@@ -123,15 +123,15 @@ option_matrix = pd.merge(ce_data, pe_data, on='strike_price').sort_values(by='st
 st.title("📈 Delta-Neutral Option Strategy Desk")
 st.caption(f"Streaming Engine Connected • Active Lot Size: **{lot_size}** contracts")
 
-# Explicit Column Target Headers
+# FIXED: Distribute headers explicitly to each column index inside the row layout
 cols_head = st.columns(7)
-cols_head.write("**Select CE**")
-cols_head.write("**CE Symbol**")
-cols_head.write("**CE LTP**")
-cols_head.write("**Strike**")
-cols_head.write("**PE LTP**")
-cols_head.write("**PE Symbol**")
-cols_head.write("**Select PE**")
+cols_head[0].write("**Select CE**")
+cols_head[1].write("**CE Symbol**")
+cols_head[2].write("**CE LTP**")
+cols_head[3].write("**Strike**")
+cols_head[4].write("**PE LTP**")
+cols_head[5].write("**PE Symbol**")
+cols_head[6].write("**Select PE**")
 
 selected_legs = []
 
@@ -143,22 +143,22 @@ for idx, row in option_matrix.iterrows():
     
     # CE Component
     ce_state = row['strike_price'] in st.session_state.selected_ce_strikes
-    ce_checked = cols.checkbox("CE", key=f"ce_chk_{idx}", value=ce_state, label_visibility="collapsed")
+    ce_checked = cols[0].checkbox("CE", key=f"ce_chk_{idx}", value=ce_state, label_visibility="collapsed")
     if ce_checked:
         st.session_state.selected_ce_strikes.add(row['strike_price'])
         selected_legs.append({"Symbol": row['CE_Symbol'], "Type": "CE", "Strike": row['strike_price'], "LTP": row['CE_LTP'], "IV": row['CE_IV']})
     else:
         st.session_state.selected_ce_strikes.discard(row['strike_price'])
         
-    cols.write(f"`{row['CE_Symbol'].replace('NSE:', '')}`")
-    cols.write(f"₹{row['CE_LTP']:.2f}")
-    cols.write(f"{bg_marker}**{int(row['strike_price'])}**")
-    cols.write(f"₹{row['PE_LTP']:.2f}")
-    cols.write(f"`{row['PE_Symbol'].replace('NSE:', '')}`")
+    cols[1].write(f"`{row['CE_Symbol'].replace('NSE:', '')}`")
+    cols[2].write(f"₹{row['CE_LTP']:.2f}")
+    cols[3].write(f"{bg_marker}**{int(row['strike_price'])}**")
+    cols[4].write(f"₹{row['PE_LTP']:.2f}")
+    cols[5].write(f"`{row['PE_Symbol'].replace('NSE:', '')}`")
     
     # PE Component
     pe_state = row['strike_price'] in st.session_state.selected_pe_strikes
-    pe_checked = cols.checkbox("PE", key=f"pe_chk_{idx}", value=pe_state, label_visibility="collapsed")
+    pe_checked = cols[6].checkbox("PE", key=f"pe_chk_{idx}", value=pe_state, label_visibility="collapsed")
     if pe_checked:
         st.session_state.selected_pe_strikes.add(row['strike_price'])
         selected_legs.append({"Symbol": row['PE_Symbol'], "Type": "PE", "Strike": row['strike_price'], "LTP": row['PE_LTP'], "IV": row['PE_IV']})
@@ -175,9 +175,9 @@ if selected_legs:
     
     for idx, leg in enumerate(selected_legs):
         cc = st.columns(6)
-        cc.write(f"**Leg {idx+1}:** `{leg['Symbol'].replace('NSE:', '')}`")
-        action = cc.selectbox("Action", ["Buy", "Sell"], key=f"act_{idx}", label_visibility="collapsed")
-        qty = cc.number_input("Lots", min_value=1, value=1, step=1, key=f"qty_{idx}", label_visibility="collapsed")
+        cc[0].write(f"**Leg {idx+1}:** `{leg['Symbol'].replace('NSE:', '')}`")
+        action = cc[1].selectbox("Action", ["Buy", "Sell"], key=f"act_{idx}", label_visibility="collapsed")
+        qty = cc[2].number_input("Lots", min_value=1, value=1, step=1, key=f"qty_{idx}", label_visibility="collapsed")
         
         # Calculate individual leg raw theoretical Delta
         raw_delta = calculate_delta(spot_price, leg['Strike'], days_to_expiry, leg['IV'], leg['Type'])
@@ -194,9 +194,9 @@ if selected_legs:
         managed_premiums.append(net_value)
         managed_deltas.append(net_delta)
         
-        cc.write(f"LTP: ₹{leg['LTP']:.2f}")
-        cc.write(f"Leg Delta: `{raw_delta * direction_delta:+.3f}`")
-        cc.write(f"Net Premium: **₹{net_value:,.2f}**")
+        cc[3].write(f"LTP: ₹{leg['LTP']:.2f}")
+        cc[4].write(f"Leg Delta: `{raw_delta * direction_delta:+.3f}`")
+        cc[5].write(f"Net Premium: **₹{net_value:,.2f}**")
         
     total_cashflow = sum(managed_premiums)
     total_net_delta = sum(managed_deltas)
@@ -217,5 +217,3 @@ if selected_legs:
     m2.metric(label="Combined Portfolio Net Delta", value=f"{total_net_delta:+.2f}", delta=delta_status_text, delta_color="normal" if abs(total_net_delta) <= (lot_size * 0.1) else "inverse")
     
     # Dynamic Visual P&L Gauge Meter Setup
-    if 'entry_cost_ref' not in st.session_state or st.session_state.get('reset_ref'):
-        st.session_state.entry_cost_ref = total_cashflow
