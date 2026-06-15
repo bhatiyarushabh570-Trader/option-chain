@@ -83,7 +83,6 @@ try:
             for item in chain_data_block["expiryData"]:
                 if "date" in item:
                     expiry_list.append(item["date"])
-                    # Use get to default to an empty string if timestamp key is missing
                     expiry_map[item["date"]] = str(item.get("timestamp", ""))
         else:
             raw_options = chain_data_block.get("optionsChain", [])
@@ -222,5 +221,6 @@ if selected_legs:
         leg_net_delta = raw_delta * direction_delta * qty * lot_size
         total_net_delta += leg_net_delta
         
-        # Advanced P&L Accounting Math Logic
+        # FIXED INDENTATION ACCOUNTING MATH BLOCK:
         if action == "Buy":
+            leg_pnl = (leg['LTP'] - entry_limit) * qty * lot_size
