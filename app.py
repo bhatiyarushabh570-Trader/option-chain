@@ -5,7 +5,7 @@ import numpy as np
 import scipy.stats as si
 from fyers_apiv3 import fyersModel
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide", page_title="Live Strategy Desk & P&L Meter")
 
@@ -66,23 +66,31 @@ elif "FINNIFTY" in underlying:
 else:
     lot_size = 65  # Nifty 50 updated from 50 to 65
 
-# --- 5. EXPIRES FILTER ENGINE & DTE TRACKER ---
+# --- 5. SAFE EXPIRES FILTER ENGINE ---
 expiry_to_fetch = ""  
-days_to_expiry = 7 # Fallback average default
+days_to_expiry = 7 
+
 try:
-    meta_payload = {"symbol": underlying, "strikecount": 2, "timestamp": ""}
+    # Use today's date formatted as a starting anchor to satisfy FYERS API baseline rules
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    meta_payload = {"symbol": underlying, "strikecount": 2, "timestamp": today_str}
     meta_response = fyers.optionchain(data=meta_payload)
     
     if meta_response.get("s") == "ok" and "expiryData" in meta_response["data"]:
         expiry_list = [item["date"] for item in meta_response["data"]["expiryData"]]
-        selected_expiry = st.sidebar.selectbox("📅 Select Expiry Date", expiry_list)
-        expiry_to_fetch = selected_expiry
-        
-        # Calculate dynamic DTE
-        exp_date = datetime.strptime(selected_expiry, "%Y-%m-%d")
-        days_to_expiry = max((exp_date - datetime.today()).days, 0)
+        if expiry_list:
+            selected_expiry = st.sidebar.selectbox("📅 Select Expiry Date", expiry_list)
+            expiry_to_fetch = selected_expiry
+            
+            # Calculate dynamic DTE
+            exp_date = datetime.strptime(selected_expiry, "%Y-%m-%d")
+            days_to_expiry = max((exp_date - datetime.today()).days, 0)
 except Exception as e:
-    pass
+    st.sidebar.warning("⚠️ Fetching available expiry dates list... Please ensure market hours or valid token.")
+
+# Fallback in case first bootstrap fails to find selected expiry string parameter
+if not expiry_to_fetch:
+    expiry_to_fetch = datetime.today().strftime("%Y-%m-%d")
 
 # --- 6. FETCH REAL-TIME DATA STREAM FOR SELECTED EXPIRY ---
 try:
@@ -100,8 +108,15 @@ try:
         else:
             spot_price = df_raw['strike_price'].median()
     else:
-        st.error(f"FYERS API Return Error: {chain_response.get('message')}")
-        st.stop()
+        # Fallback query if precise chosen date returns an structural anomaly
+        chain_payload["timestamp"] = ""
+        fallback_response = fyers.optionchain(data=chain_payload)
+        if fallback_response.get("s") == "ok":
+            df_raw = pd.DataFrame(fallback_response["data"]["optionsChain"])
+            spot_price = df_raw['strike_price'].median()
+        else:
+            st.error(f"FYERS API Return Error: {chain_response.get('message', 'Check app authorization details.')}")
+            st.stop()
 except Exception as e:
     st.error(f"Live API Sync Failed. Check if token is expired: {str(e)}")
     st.stop()
@@ -109,7 +124,6 @@ except Exception as e:
 # --- 7. FORMAT CONFIGURATION LAYOUT ---
 df_options = df_raw[df_raw['option_type'].isin(['CE', 'PE'])].copy()
 
-# Ensure IV field exists or fall back to an average benchmark
 if 'iv' not in df_options.columns:
     df_options['iv'] = 14.0
 
@@ -196,7 +210,6 @@ if selected_legs:
     st.write("---")
     st.header("📊 Real-Time Portfolio Performance Cockpit")
     
-    # Render combined analytical metric cards
     m1, m2, m3 = st.columns(3)
     
     if total_cashflow < 0:
@@ -208,21 +221,9 @@ if selected_legs:
               delta=f"Equivalent to {total_net_delta:,.1f} Underlying Shares", delta_color="normal" if abs(total_net_delta) < 10 else "inverse")
     
     # Dynamic Visual P&L Gauge Meter Setup
-    # Simulates real-time variance based on entry capital reference
     if 'entry_cost_ref' not in st.session_state or st.session_state.get('reset_ref'):
         st.session_state.entry_cost_ref = total_cashflow
         st.session_state.reset_ref = False
         
     current_pnl = total_cashflow - st.session_state.entry_cost_ref
-    
-    if current_pnl >= 0:
-        m3.metric(label="🔥 Live Active P&L State", value=f"₹{current_pnl:,.2f}", delta="🟢 IN THE GREEN (Profit Tracking)", delta_color="normal")
-    else:
-        m3.metric(label="🔥 Live Active P&L State", value=f"-₹{abs(current_pnl):,.2f}", delta="🔴 IN THE RED (Loss Tracking)", delta_color="inverse")
-        
-    # Visual Progress/Meter Bar Layout
-    st.write("**Strategy Running P&L Gauge Meter:**")
-    max_boundary = max(abs(st.session_state.entry_cost_ref) * 0.1, 5000) # 10% movement stop band reference
-    progress_ratio = (current_pnl + max_boundary) / (max_boundary * 2)
-    progress_ratio = max(min(progress_ratio, 1.0), 0.0) # Clamp between 0 and 1
     
