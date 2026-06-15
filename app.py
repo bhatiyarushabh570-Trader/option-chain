@@ -5,7 +5,7 @@ import numpy as np
 import scipy.stats as si
 from fyers_apiv3 import fyersModel
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="Live Strategy Desk & P&L Meter")
 
@@ -103,12 +103,12 @@ try:
         
         idx_row = df_raw[df_raw['exchange'] == 10]
         if not idx_row.empty:
-            spot_price = idx_row['ltp'].iloc
+            spot_price = idx_row['ltp'].iloc[0]
             st.sidebar.metric(label="Live Index Spot Price", value=f"₹{spot_price:,.2f}")
         else:
             spot_price = df_raw['strike_price'].median()
     else:
-        # Fallback query if precise chosen date returns an structural anomaly
+        # Fallback query if precise chosen date returns a structural anomaly
         chain_payload["timestamp"] = ""
         fallback_response = fyers.optionchain(data=chain_payload)
         if fallback_response.get("s") == "ok":
@@ -135,14 +135,15 @@ option_matrix = pd.merge(ce_data, pe_data, on='strike_price').sort_values(by='st
 st.title("📈 Multi-Leg Trading Dashboard & P&L Meter")
 st.caption(f"Connected to FYERS API Feed • Active Lot Size: **{lot_size}** contracts per lot.")
 
+# FIXED: Unpack list items directly to explicitly handle specific row columns
 h_cols = st.columns(7)
-h_cols.write("**Select CE**")
-h_cols.write("**CE Symbol**")
-h_cols.write("**CE LTP**")
-h_cols.write("**Strike**")
-h_cols.write("**PE LTP**")
-h_cols.write("**PE Symbol**")
-h_cols.write("**Select PE**")
+h_cols[0].write("**Select CE**")
+h_cols[1].write("**CE Symbol**")
+h_cols[2].write("**CE LTP**")
+h_cols[3].write("**Strike**")
+h_cols[4].write("**PE LTP**")
+h_cols[5].write("**PE Symbol**")
+h_cols[6].write("**Select PE**")
 
 selected_legs = []
 
@@ -154,22 +155,22 @@ for idx, row in option_matrix.iterrows():
     
     # CE Selection
     ce_state = row['strike_price'] in st.session_state.selected_ce_strikes
-    ce_checked = cols.checkbox("CE", key=f"ce_chk_{idx}", value=ce_state, label_visibility="collapsed")
+    ce_checked = cols[0].checkbox("CE", key=f"ce_chk_{idx}", value=ce_state, label_visibility="collapsed")
     if ce_checked:
         st.session_state.selected_ce_strikes.add(row['strike_price'])
         selected_legs.append({"Symbol": row['CE_Symbol'], "Type": "CE", "Strike": row['strike_price'], "LTP": row['CE_LTP'], "IV": row['CE_IV']})
     else:
         st.session_state.selected_ce_strikes.discard(row['strike_price'])
         
-    cols.write(f"`{row['CE_Symbol'].replace('NSE:', '')}`")
-    cols.write(f"₹{row['CE_LTP']:.2f}")
-    cols.write(f"{bg_marker}**{int(row['strike_price'])}**")
-    cols.write(f"₹{row['PE_LTP']:.2f}")
-    cols.write(f"`{row['PE_Symbol'].replace('NSE:', '')}`")
+    cols[1].write(f"`{row['CE_Symbol'].replace('NSE:', '')}`")
+    cols[2].write(f"₹{row['CE_LTP']:.2f}")
+    cols[3].write(f"{bg_marker}**{int(row['strike_price'])}**")
+    cols[4].write(f"₹{row['PE_LTP']:.2f}")
+    cols[5].write(f"`{row['PE_Symbol'].replace('NSE:', '')}`")
     
     # PE Selection
     pe_state = row['strike_price'] in st.session_state.selected_pe_strikes
-    pe_checked = cols.checkbox("PE", key=f"pe_chk_{idx}", value=pe_state, label_visibility="collapsed")
+    pe_checked = cols[6].checkbox("PE", key=f"pe_chk_{idx}", value=pe_state, label_visibility="collapsed")
     if pe_checked:
         st.session_state.selected_pe_strikes.add(row['strike_price'])
         selected_legs.append({"Symbol": row['PE_Symbol'], "Type": "PE", "Strike": row['strike_price'], "LTP": row['PE_LTP'], "IV": row['PE_IV']})
@@ -186,9 +187,9 @@ if selected_legs:
     
     for idx, leg in enumerate(selected_legs):
         cc = st.columns(6)
-        cc.write(f"**Leg {idx+1}:** `{leg['Symbol'].replace('NSE:', '')}`")
-        action = cc.selectbox("Action", ["Buy", "Sell"], key=f"act_{idx}", label_visibility="collapsed")
-        qty = cc.number_input("Lots", min_value=1, value=1, step=1, key=f"qty_{idx}", label_visibility="collapsed")
+        cc[0].write(f"**Leg {idx+1}:** `{leg['Symbol'].replace('NSE:', '')}`")
+        action = cc[1].selectbox("Action", ["Buy", "Sell"], key=f"act_{idx}", label_visibility="collapsed")
+        qty = cc[2].number_input("Lots", min_value=1, value=1, step=1, key=f"qty_{idx}", label_visibility="collapsed")
         
         # Calculate individual directional Greek Delta
         raw_delta = calculate_delta(spot_price, leg['Strike'], days_to_expiry, leg['IV'], leg['Type'])
@@ -200,9 +201,9 @@ if selected_legs:
         managed_premiums.append(net_value)
         managed_deltas.append(net_delta)
         
-        cc.write(f"LTP: ₹{leg['LTP']:.2f}")
-        cc.write(f"Delta: `{raw_delta:+.3f}`")
-        cc.write(f"Net Value: **₹{net_value:,.2f}**")
+        cc[3].write(f"LTP: ₹{leg['LTP']:.2f}")
+        cc[4].write(f"Delta: `{raw_delta:+.3f}`")
+        cc[5].write(f"Net Value: **₹{net_value:,.2f}**")
         
     total_cashflow = sum(managed_premiums)
     total_net_delta = sum(managed_deltas)
@@ -223,7 +224,3 @@ if selected_legs:
     # Dynamic Visual P&L Gauge Meter Setup
     if 'entry_cost_ref' not in st.session_state or st.session_state.get('reset_ref'):
         st.session_state.entry_cost_ref = total_cashflow
-        st.session_state.reset_ref = False
-        
-    current_pnl = total_cashflow - st.session_state.entry_cost_ref
-    
